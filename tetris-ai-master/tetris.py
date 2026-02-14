@@ -1,8 +1,5 @@
 import random
-import cv2
 import numpy as np
-from PIL import Image
-from time import sleep
 
 # Tetris game class
 class Tetris:
@@ -272,8 +269,8 @@ class Tetris:
         return 4
 
 
-    def play(self, x, rotation, render=False, render_delay=None):
-        '''Makes a play given a position and a rotation, returning the reward and if the game is over'''
+    def play(self, x, rotation, render=False, render_delay=None, piece_limit=0):
+        '''Makes a play given a position and a rotation, returning the reward and if the game is over.'''
         self.current_pos = [x, 0]
         self.current_rotation = rotation
 
@@ -286,7 +283,7 @@ class Tetris:
             self.current_pos[1] += 1
         self.current_pos[1] -= 1
 
-        # Update board and calculate score        
+        # Update board and calculate score
         self.board = self._add_piece_to_board(self._get_rotated_piece(), self.current_pos)
         lines_cleared, self.board = self._clear_lines(self.board)
         score = 1 + (lines_cleared ** 2) * Tetris.BOARD_WIDTH
@@ -298,16 +295,3 @@ class Tetris:
             score -= 2
 
         return score, self.game_over
-
-
-    def render(self):
-        '''Renders the current board'''
-        img = [Tetris.COLORS[p] for row in self._get_complete_board() for p in row]
-        img = np.array(img).reshape(Tetris.BOARD_HEIGHT, Tetris.BOARD_WIDTH, 3).astype(np.uint8)
-        img = img[..., ::-1] # Convert RRG to BGR (used by cv2)
-        img = Image.fromarray(img, 'RGB')
-        img = img.resize((Tetris.BOARD_WIDTH * 25, Tetris.BOARD_HEIGHT * 25), Image.NEAREST)
-        img = np.array(img)
-        cv2.putText(img, str(self.score), (22, 22), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 1)
-        cv2.imshow('image', np.array(img))
-        cv2.waitKey(1)

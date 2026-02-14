@@ -4,8 +4,6 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
-dist/
-build/
 
 # Virtual Environment
 .venv/
@@ -17,14 +15,6 @@ ENV/
 .idea/
 *.swp
 *.swo
-
-# Logs
-logs/
-*.log
-
-# Models (uncomment if you want to exclude trained models)
-# models/
-# best.keras
 
 # OS
 .DS_Store

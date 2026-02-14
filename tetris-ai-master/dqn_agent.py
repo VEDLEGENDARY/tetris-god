@@ -1,5 +1,35 @@
+# ─── CPU/GPU Optimization for TensorFlow ─────────────────────────────────────────
+# Enable oneDNN and multi-threading for faster CPU training
+import os
+os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '1')  # Enable oneDNN optimizations
+os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')   # Suppress ALL TF logs
+
+import tensorflow as tf
+# Configure TensorFlow to use all available CPU cores efficiently
+tf.config.threading.set_intra_op_parallelism_threads(0)  # Auto-detect
+tf.config.threading.set_inter_op_parallelism_threads(0)  # Auto-detect
+
+# Enable GPU if available with memory growth to avoid crashes
+try:
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"[INFO] GPU acceleration enabled: {len(gpus)} GPU(s) detected")
+except Exception as e:
+    print(f"[WARN] GPU setup failed: {e}")
+
+# Enable mixed precision for faster training (works on GPU and modern CPUs)
+try:
+    from tensorflow.keras import mixed_precision
+    policy = mixed_precision.Policy('mixed_float16')
+    mixed_precision.set_global_policy(policy)
+    print("[INFO] Mixed precision (FP16) enabled for faster training")
+except Exception:
+    pass  # Fall back to default precision
+
 from keras.models import Sequential, load_model
-from keras.layers import Dense
+from keras.layers import Dense, Input
 from collections import deque
 import numpy as np
 import random
@@ -66,7 +96,8 @@ class DQNAgent:
 
         # load an existing model
         if modelFile is not None:
-            self.model = load_model(modelFile)
+            self.model = load_model(modelFile, compile=False)
+            self.model.compile(loss=self.loss, optimizer=self.optimizer)
         # create a new model
         else:
             self.model = self._build_model()
@@ -75,14 +106,20 @@ class DQNAgent:
     def _build_model(self):
         '''Builds a Keras deep neural network model'''
         model = Sequential()
-        model.add(Dense(self.n_neurons[0], input_dim=self.state_size, activation=self.activations[0]))
+        model.add(Input(shape=(self.state_size,)))
+        model.add(Dense(self.n_neurons[0], activation=self.activations[0]))
 
         for i in range(1, len(self.n_neurons)):
             model.add(Dense(self.n_neurons[i], activation=self.activations[i]))
 
         model.add(Dense(1, activation=self.activations[-1]))
 
-        model.compile(loss=self.loss, optimizer=self.optimizer)
+        # Compile with JIT for faster execution
+        try:
+            model.compile(loss=self.loss, optimizer=self.optimizer, jit_compile=True)
+        except Exception:
+            # Fall back to regular compilation if JIT not supported
+            model.compile(loss=self.loss, optimizer=self.optimizer)
         
         return model
 
@@ -98,8 +135,8 @@ class DQNAgent:
 
 
     def predict_value(self, state):
-        '''Predicts the score for a certain state'''
-        return self.model.predict(state, verbose=0)[0]
+        '''Predicts the score for a certain state (fast, no overhead)'''
+        return self.model(state, training=False).numpy()[0]
 
 
     def act(self, state):
@@ -112,40 +149,32 @@ class DQNAgent:
 
 
     def best_state(self, states):
-        '''Returns the best state for a given collection of states'''
-        max_value = None
-        best_state = None
-
+        '''Returns the best state for a given collection of states.
+        Uses batch prediction for much faster inference.'''
         if random.random() <= self.epsilon:
             return random.choice(list(states))
 
-        else:
-            for state in states:
-                value = self.predict_value(np.reshape(state, [1, self.state_size]))
-                if not max_value or value > max_value:
-                    max_value = value
-                    best_state = state
-
-        return best_state
+        states_list = list(states)
+        batch = np.array(states_list)
+        predictions = self.model(batch, training=False).numpy()
+        best_idx = np.argmax(predictions)
+        return states_list[best_idx]
 
 
     def train(self, batch_size=32, epochs=3):
         '''Trains the agent'''
-        if batch_size > self.mem_size:
-            print('WARNING: batch size is bigger than mem_size. The agent will not be trained.')
-
         n = len(self.memory)
-    
+
         if n >= self.replay_start_size and n >= batch_size:
 
             batch = random.sample(self.memory, batch_size)
 
             # Get the expected score for the next states, in batch (better performance)
-            next_states = np.array([x[1] for x in batch])
-            next_qs = [x[0] for x in self.model.predict(next_states)]
+            next_states = np.array([x[1] for x in batch], dtype=np.float32)
+            next_qs = [x[0] for x in self.model(next_states, training=False).numpy()]
 
-            x = []
-            y = []
+            x = np.empty((batch_size, self.state_size), dtype=np.float32)
+            y = np.empty(batch_size, dtype=np.float32)
 
             # Build xy structure to fit the model in batch (better performance)
             for i, (state, _, reward, done) in enumerate(batch):
@@ -155,11 +184,11 @@ class DQNAgent:
                 else:
                     new_q = reward
 
-                x.append(state)
-                y.append(new_q)
+                x[i] = state
+                y[i] = new_q
 
-            # Fit the model to the given values
-            self.model.fit(np.array(x), np.array(y), batch_size=batch_size, epochs=epochs, verbose=0)
+            # Fit the model to the given values (workers not needed for numpy arrays)
+            self.model.fit(x, y, batch_size=batch_size, epochs=epochs, verbose=0)
 
             # Update the exploration variable
             if self.epsilon > self.epsilon_min:
